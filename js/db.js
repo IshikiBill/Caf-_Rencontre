@@ -1,79 +1,42 @@
-const DB_NAME = "cafeRencontreDB";
-const DB_VERSION = 1;
-let dbInstance = null;
+// Stockage via localStorage (et non IndexedDB) : IndexedDB est bloqué par Chrome
+// et Safari quand la page est ouverte en double-clic (file://) plutôt que via un
+// serveur. localStorage fonctionne de façon fiable dans les deux cas.
 
-function openDB() {
-  return new Promise((resolve, reject) => {
-    if (dbInstance) return resolve(dbInstance);
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = (e) => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains("achats")) db.createObjectStore("achats", { keyPath: "id" });
-      if (!db.objectStoreNames.contains("ventes")) db.createObjectStore("ventes", { keyPath: "id" });
-      if (!db.objectStoreNames.contains("parametres")) db.createObjectStore("parametres", { keyPath: "key" });
-      if (!db.objectStoreNames.contains("compteurs")) db.createObjectStore("compteurs", { keyPath: "key" });
-    };
-    req.onsuccess = (e) => { dbInstance = e.target.result; resolve(dbInstance); };
-    req.onerror = (e) => reject(e.target.error);
-  });
+function readAll(storeName) {
+  try { return JSON.parse(localStorage.getItem("crdb_" + storeName) || "[]"); }
+  catch { return []; }
 }
-
-async function txStore(storeName, mode) {
-  const db = await openDB();
-  return db.transaction(storeName, mode).objectStore(storeName);
+function writeAll(storeName, arr) {
+  localStorage.setItem("crdb_" + storeName, JSON.stringify(arr));
 }
 
 async function dbGetAll(storeName) {
-  const store = await txStore(storeName, "readonly");
-  return new Promise((resolve, reject) => {
-    const req = store.getAll();
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function dbGet(storeName, key) {
-  const store = await txStore(storeName, "readonly");
-  return new Promise((resolve, reject) => {
-    const req = store.get(key);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+  return readAll(storeName);
 }
 
 async function dbPut(storeName, value) {
-  const store = await txStore(storeName, "readwrite");
-  return new Promise((resolve, reject) => {
-    const req = store.put(value);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+  const arr = readAll(storeName);
+  const matchKey = value.id !== undefined ? "id" : "key";
+  const idx = arr.findIndex((x) => x[matchKey] === value[matchKey]);
+  if (idx >= 0) arr[idx] = value;
+  else arr.push(value);
+  writeAll(storeName, arr);
+  return value[matchKey];
 }
 
 async function dbDelete(storeName, key) {
-  const store = await txStore(storeName, "readwrite");
-  return new Promise((resolve, reject) => {
-    const req = store.delete(key);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
+  writeAll(storeName, readAll(storeName).filter((x) => x.id !== key));
 }
 
 async function nextRef(prefix) {
-  const store = await txStore("compteurs", "readwrite");
   const year = new Date().getFullYear();
   const key = prefix + "-" + year;
-  return new Promise((resolve, reject) => {
-    const req = store.get(key);
-    req.onsuccess = () => {
-      const current = req.result ? req.result.value : 0;
-      const next = current + 1;
-      const putReq = store.put({ key, value: next });
-      putReq.onsuccess = () => resolve(`${prefix}-${year}-${String(next).padStart(4, "0")}`);
-      putReq.onerror = () => reject(putReq.error);
-    };
-    req.onerror = () => reject(req.error);
-  });
+  const compteurs = readAll("compteurs");
+  let rec = compteurs.find((c) => c.key === key);
+  if (!rec) { rec = { key, value: 0 }; compteurs.push(rec); }
+  rec.value += 1;
+  writeAll("compteurs", compteurs);
+  return `${prefix}-${year}-${String(rec.value).padStart(4, "0")}`;
 }
 
-window.DB = { openDB, dbGetAll, dbGet, dbPut, dbDelete, nextRef };
+window.DB = { dbGetAll, dbPut, dbDelete, nextRef };
